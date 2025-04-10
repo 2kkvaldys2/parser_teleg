@@ -1,90 +1,94 @@
 from telethon import TelegramClient, events
 import json
 import os
+import asyncio
 from dotenv import load_dotenv
 
-# load dotenv
+# Load environment variables
 load_dotenv()
 
-# Данні API
 api_id = int(os.getenv("API_ID"))
 api_hash = os.getenv("API_HASH")
-
-# Назва сесії
 session_name = "telegram_parser_active"
 
-# Файл для останніх повідомлень
-LAST_MESSAGES_FILE = "last_messages.json"
+DEST_CHANNEL_ID = -1002403468473  # ID закрытого канала
 
-# ID каналу-приймача (закритий канал)
-DEST_CHANNEL_ID = -1002403468473
-
-# Мапа джерел → відповідні гілки (topic_id)
+# Mapping источников → ID гілок
 channel_mapping = {
-    os.getenv("CH_FIRST"): int(os.getenv("FORK_FIRST")),  
+    os.getenv("CH_FIRST"): int(os.getenv("FORK_FIRST")),
     os.getenv("CH_SECOND"): int(os.getenv("FORK_SECOND")),
     os.getenv("CH_THIRD"): int(os.getenv("FORK_THIRD")),
-    os.getenv("CH_FOURTH"): int(os.getenv("FORK_THIRD")),
+    os.getenv("CH_FOURTH"): int(os.getenv("FORK_FOURTH")),
 }
 
-# Завантаження ID останніх повідомлень
+LAST_MESSAGES_FILE = "last_messages.json"
+last_messages = {}
+
+# Загрузка последних сообщений из файла
 if os.path.exists(LAST_MESSAGES_FILE):
     with open(LAST_MESSAGES_FILE, "r") as f:
         last_messages = json.load(f)
-else:
-    last_messages = {}
 
-# Зберігання ID повідомлення
-def save_last_message(chat_id, message_id):
+# Асинхронная запись в файл
+save_task = None
+
+async def save_last_message(chat_id, message_id):
     last_messages[str(chat_id)] = message_id
+    global save_task
+    if save_task and not save_task.done():
+        return
+    save_task = asyncio.create_task(_write_to_file())
+
+async def _write_to_file():
+    await asyncio.sleep(1)
     with open(LAST_MESSAGES_FILE, "w") as f:
         json.dump(last_messages, f)
 
-# Створюємо клієнт
-client = TelegramClient(session_name, api_id, api_hash)
+# Клиент с отключённой защитой от флуда
+client = TelegramClient(session_name, api_id, api_hash, flood_sleep_threshold=0)
+
+@client.on(events.NewMessage())
+async def handler(event):
+    if event.message.out:  # Пропустить свои сообщения
+        return
+
+    chat_id = str(event.chat_id)
+    message_id = event.message.id
+
+    # Пропускаем уже обработанные
+    if chat_id in last_messages and message_id <= last_messages[chat_id]:
+        return
+
+    # Получаем ключ (username или ID)
+    key = event.chat.username if event.chat and event.chat.username in channel_mapping else chat_id
+    topic_ids = channel_mapping.get(key)
+
+    if not topic_ids:
+        print(f"❌ Нет гілки для {chat_id}")
+        return
+
+    if not isinstance(topic_ids, list):
+        topic_ids = [topic_ids]
+
+    for topic_id in topic_ids:
+        try:
+            await client.send_message(
+                entity=DEST_CHANNEL_ID,
+                message=event.message,
+                reply_to=topic_id
+            )
+            print(f"✅ Переслано з {chat_id} в гілку {topic_id}")
+        except Exception as e:
+            print(f"⚠️ Помилка пересилки в гілку {topic_id}: {e}")
+
+    await save_last_message(chat_id, message_id)
 
 async def main():
     await client.start()
     me = await client.get_me()
-    print(f"Юзер: {me.first_name} ({me.username})")
-
-    @client.on(events.NewMessage())
-    async def handler(event):
-        chat_id = str(event.chat_id)
-        message_id = event.message.id
-
-        # Пропускаємо старі повідомлення
-        if chat_id in last_messages and message_id <= last_messages[chat_id]:
-            return
-
-        # Отримуємо ключ для mapping (username або chat_id)
-        key = event.chat.username if event.chat and event.chat.username in channel_mapping else chat_id
-        topic_ids = channel_mapping.get(key)
-
-        if not topic_ids:
-            print(f"❌ Не знайдено гілки для {chat_id}")
-            return
-
-        # Якщо одне число — перетворюємо на список
-        if not isinstance(topic_ids, list):
-            topic_ids = [topic_ids]
-
-        # Надсилання в усі гілки
-        for topic_id in topic_ids:
-            try:
-                await client.send_message(
-                    entity=DEST_CHANNEL_ID,
-                    message=event.message,
-                    reply_to=topic_id
-                )
-                print(f"✅ Повідомлення з {chat_id} надіслано в гілку {topic_id}")
-            except Exception as e:
-                print(f"⚠️ Помилка надсилання в гілку {topic_id}: {e}")
-
-        # Зберігаємо ID останнього повідомлення
-        save_last_message(chat_id, message_id)
-
-    print("📡 Парсер працює...")
+    print(f"🟢 Підключено як {me.first_name} ({me.username})")
+    print("📡 Парсер запущено...")
     await client.run_until_disconnected()
 
-client.loop.run_until_complete(main())
+with client:
+    client.loop.run_until_complete(main())

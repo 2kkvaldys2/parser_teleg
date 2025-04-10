@@ -23,6 +23,8 @@ DEST_CHANNEL_ID = -1002403468473
 channel_mapping = {
     os.getenv("CH_FIRST"): int(os.getenv("FORK_FIRST")),  
     os.getenv("CH_SECOND"): int(os.getenv("FORK_SECOND")),
+    os.getenv("CH_THIRD"): int(os.getenv("FORK_THIRD")),
+    os.getenv("CH_FOURTH"): int(os.getenv("FORK_THIRD")),
 }
 
 # Завантаження ID останніх повідомлень
